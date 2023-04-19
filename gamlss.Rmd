@@ -1,0 +1,609 @@
+---
+title: "Lead Data Scientist, Curves- Test Output"
+author: "Olushina Olawale Awe, PhD."
+date: "2023-04-08"
+output: 
+  html_document: 
+    theme: readable
+    toc: yes
+---
+
+
+```{r}
+### Install all necessary packages
+library(gamlss.ggplots)
+library(ggplot2)
+library(gamlss)
+library(gamlss.add)
+library(gamlss.dist)
+library(corrplot)
+library(cowplot)
+library(Hmisc)
+library(dplyr)
+library(forecast)
+library(tseries)
+library(psych)
+library(Boruta)
+library(caret)
+library(caretEnsemble)
+```
+
+
+### 0. Preamble
+In this test excercise, I am going to demonstrate how to approach a data science problem, supporting my explanation with the oil price data available in the gamlss package, while performing a one-day ahead forecast for oil prices. I will adopt the following outline which also serves as the steps involved:
+
+- 1. Problem Statement and Objective
+- 2. Data Extraction and Description
+- 3. Data Exploration and Pre-processing
+- 4. Model Building
+- 5. Model Evaluation and Validation
+- 6. Forecasting
+- 7. Interpretation and Conclusion
+
+Let us consider these steps one after the other as follows: 
+
+### 1. Problem Statement and Objective 
+
+The objective of this excercise is to conduct a probalistic forecast of oil price using gamlss model selection technique to discover the most important variables that affects the price of oil. Based on real global events, non-seasonality of oil price, among other issues, there is currently no known best method for predicting Oil prices in literature, therefore, oil companies and oil service companies will have to adapt to recent world activities that impact oil production. There are several variables that can indirectly impact oil prices. The main goal here is to use some financially traded vagaries to discover what might affect the daily dynamics of the price of oil by using GAMLSS model selection techniques to discover what affects the price of oil and obtain a one day ahead forecast. Due to the the "No free lunch theorem" and the "Bias-Variance Trade off" in machine learning, it is difficult to select and adopt a single model for forecasting but we fit basic models in this exercise mainly for illustrative purposes. 
+
+### 2. Data Extraction and Description: The Oil Price Data
+
+The oil data is available in the GAMLSS package in R. We can load the data with the following code: 
+
+```{r}
+oil <- gamlss.data::oil
+#oil
+```
+ Check the size of the data
+```{r}
+dim(oil) # The data has 25 variables and 1000 observations
+```
+ 
+ Let us consider the names of the variables and see the data description. Upon obtaining information about the data and data dictionary, we notice that all the variables are numeric and seem to have similar scales. 
+ 
+```{r}
+names(oil)
+```
+
+#### Data description
+
+```{r}
+#help(oil)
+str(oil)
+```
+
+The dataset contains the daily prices of front month WTI (West Texas Intermediate) oil price traded by NYMEX (New York Mercantile Exchange). The front month WTI oil price is a futures contract with the shortest duration that could be purchased in the NYMEX market. It can be seen that the oil dataset in the GAMLSS package contains the following numeric variables:
+
+- OILPRICE: The log price of the front month WTI oil contract traded by NYMEX - in financial terms, this is the CL1. This is the response/target variable.
+- CL(2,..,15)_LOG: Numeric vectors which are the log prices of the 2 to 15 months ahead WTI oil contracts traded by NYMEX. For example, for the trading day of 2nd June 2016, the CL2 is the WTI oil contract for delivery in August 2016.
+- BDIY_LOG: The Baltic Dry Index, which is an assessment of the price of moving the major raw materials by sea.
+- SPX_LOG: The S&P 500 index.
+- DX1_LOG: The US Dollar Index.
+- GC1_LOG: The log price of the front month gold price contract traded by NYMEX.
+- HO1_LOG: The log price of the front month heating oil contract traded by NYMEX.
+- USCI_LOG: The United States Commodity Index.
+- GNR_LOG: The S&P Global Natural Resources Index.
+- SHCOMP_LOG: The Shanghai Stock Exchange Composite Index.
+- FTSE_LOG: The FTSE 100 Index.
+- RESPLAG: The lag 1 of OILPRICE - lagged version of the response variable.
+
+
+### 3. Data Exploration and Preprocessing.
+
+
+Check if there are null and missing values in the data:
+
+```{r}
+is.null(oil)
+sum(is.na(oil)) # The data contains no zero and missing values. 
+```
+
+
+```{r}
+attach(oil)
+```
+
+Plot OILPRICE with an assumed date to see how the price changes over time. 
+Since there is no specific date attached to the data, we assume a starting date for the data. 
+ 
+```{r}
+oildata <- oil
+
+# added an arbitrary date
+oildata$Date <- as.Date(c(0:999), origin="2020-08-01")
+# The time series plot of the data shows that the data is not seasonal
+# select required columns
+data_new <- oildata[, c("OILPRICE", "Date")]
+ggplot(data_new) +
+  aes(x = Date, y = OILPRICE) + 
+  geom_line(color = 'red') + theme_cowplot() +
+  labs(title = 'Oil Price Trend', x = 'Year') + 
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(hjust = 0.55),
+          panel.grid.minor.x = element_blank(),
+          axis.ticks.x = element_line(color = "black")
+  )
+```
+
+#### Descriptive Statistics and Exploratory Data Analysis
+
+I explore the data as follows to further confirm that there are no missing values or outliers in the data.
+
+```{r}
+summary(oildata[,-26])
+```
+
+or better still, we can use describe function in the psych package to get a better glimpse of the descriptive statistics of the data. It can be seen that the data has been well transformed as most of the mean values revolves around the same values for each variable. 
+
+```{r}
+describe(oildata[,-26])
+```
+
+
+#### Data Reduction
+
+I reduce the data by creating a subset of the data,which implies removing the last day's negotiations.
+ 
+```{r}
+oildata_s = oildata[,-2:-15]# Remove the last day's negotiations
+#oildata_s
+oildata_s= oildata_s[,-12]
+names(oildata_s)
+head(oildata_s)
+dim(oildata_s)
+```
+
+#### Variable Transformation
+
+The variables in the dataset are already log transformed. Applying more transformations to these variables would bring about a complex interpretation of the data. More so, the gamlss model accepts various types of distributions for the independent variables. Prices are known to have asymmetric distributions, and they are well fitted in the GAMLSS. We can therefore proceed directly to model building. 
+
+#### Data Visualization
+
+Let us examine the descriptive distribution of the variables. Further examine the visual relationship of each variable with the response variable- OILPRICE to obtain a clearer picture.
+
+
+```{r}
+pairs(oildata_s)
+```
+
+
+
+```{r}
+plot1 <- ggplot(oildata_s, aes(SPX_log, OILPRICE)) +
+  geom_point(color = 'red') + theme_cowplot(12)
+plot2 <- ggplot(oildata_s, aes(DX1_log, OILPRICE)) +
+  geom_point(color = 'blue') + theme_cowplot(12)
+plot3 <- ggplot(oildata_s, aes(BDIY_log, OILPRICE)) +
+  geom_point(color = 'black')+ theme_cowplot(12)
+plot4 <- ggplot(oildata_s, aes(GC1_log, OILPRICE)) +
+  geom_point(color = 'yellow')+theme_cowplot(12)
+plot5 <- ggplot(oildata_s, aes(HO1_log, OILPRICE)) +
+  geom_point(color = 'green')
+plot6 <- ggplot(oildata_s, aes(FTSE_log, OILPRICE)) +
+  geom_point(color = 'grey')
+  plot7 <- ggplot(oildata_s, aes(USCI_log, OILPRICE)) +
+  geom_point(color = 'pink')
+plot8 <- ggplot(oildata_s, aes(GNR_log, OILPRICE)) +
+  geom_point(color = 'violet')
+plot9 <- ggplot(oildata_s, aes(SHCOMP_log, OILPRICE)) +
+  geom_point(color = 'lightblue')
+```
+```{r}
+#Show the plots
+plot_grid(plot1,plot2,plot3,plot4,plot5,plot6,plot7,plot8,plot9)
+```
+
+Note that we omitted respLag in the plot for obvious reasons. It is the same variable but with lag values. The variables USCI_log, GNR_log and H01_log seem to have linear relationship with the target variable but we shall examine their significance further with the gamlss model.  
+
+
+Correlation Plots
+
+Next, let us have an overview of the variable correlations with the target.
+First, examine a correlation plot of the entire data.
+
+
+```{r}
+oildata=oildata[,-26]
+corr_mat=cor(oildata, method="s")
+corrplot(corr_mat, method = "ellipse",
+         order = "hclust",
+         #addCoef.col = "black",
+         tl.col = "black")
+
+```
+
+Then examine the correlation plot of the reduced data
+
+
+```{r}
+cormat <- cor(oildata_s)
+
+corrplot(cormat, method = "ellipse",
+         type = "lower",
+         tl.col = "#424242",
+         tl.srt = 45,
+         addCoef.col = "#ffffff",
+         col = colorRampPalette(c("#4D4D4D", "red", "#5288DB"))(100),
+         tl.cex = 0.5,
+         number.cex = 0.5,
+         number.font = 1,
+         cl.cex = 0.5)
+```
+
+In all correlations, the following variables seem to be highly correlated with OILPRICE- USCI_log, HO1_log, SHOMP_log and DX1_log but we shall investigate further #their contributions to the model.
+
+
+### 4. Model Building
+
+The GAMLSS is a highly flexible statistical learning model. It is a unified framework for regression type of models. It is suitable for both univariate and multivariate forecasting. It allows any distribution for the target variable, and also models all the parameters of the distribution of the response variable Y. It enables a variety of penalized additive terms in the model for the distribution parameters. It can also deal with overdispersion, skewness and kurtosis.
+
+#### Target Variable
+Examine the distribution of the response variable before modeling. One of the most important modelling decisions for a GAMLSS model is the choice of the distribution for the response variable.
+
+
+```{r}
+histDist(OILPRICE, family=BCPE,density=T)
+histDist(respLAG, family=BCPE,density=T)
+```
+
+
+#### Feature selection with the Boruta Algorithm
+
+This is necessary to determine if any of the features are redundant. The Boruta algorithm is known as one of the best algorithms for feature selection. 
+
+
+```{r}
+library(Boruta)
+borC = Boruta(OILPRICE ~., data = oildata, doTrace = 2, maxRuns=50)
+print(borC)
+par(pty='m')
+plot(borC,las=2,cex.axis=0.7)
+#plotImpHistory(borC)
+bor1=TentativeRoughFix(borC)
+attStats(bor1)
+```
+
+The Boruta algorithm confirms that all the variables are important for prediction of oil price. However, the three tentative attributes suggested will be investigated for significance in the gamlss model. 
+
+Hence, we decide to keep all the features but divide the data into two: 
+
+- 1. The entire dataframe (base_data) herein referred to as oildata
+- 2. The sub_data(excluding CL2-CL15) herein referred to as oildata_s
+
+#### Data Partition
+
+To train our models, we partition the two datasets above in the 70/30 divide as follows: 
+
+- 1. Partition the base (full) data
+
+```{r}
+ind=sample(2, nrow(oildata),replace=T, prob=c(0.70,0.30))
+train1=oildata[ind==1,]
+test1= oildata[ind==2,]
+dim(train1)
+dim(test1)
+```
+
+
+Partition the sub-data (reduced data)
+
+```{r}
+ind=sample(2, nrow(oildata_s),replace=T,prob=c(0.70,0.30))
+train2=oildata_s[ind==1,]
+test2= oildata_s[ind==2,]
+dim(train2)
+dim(test2)
+```
+Model building
+
+I shall build the following six models:
+
+- 1. GAMLSS Model with no additive terms including all the variables(base_data)
+- 2. GAMLSS Model with no additive terms excluding the CL2-CL15 variables (sub_data)
+- 3. GAMLSS Model with additive terms including all the variables (base_data)
+- 4. GAMLSS Model with additive terms excluding the CL2-CL15 variables (sub_data)
+- 5. GAMLSS Model with no additive terms including selected significant variables
+- 6. GAMLSS Model with additive terms including selected variables. 
+
+Let us proceed on model building as follows: 
+
+#### Model 1: GAMLSS Model with no additive terms including all the variables(base_data)
+
+
+```{r}
+model1 <- gamlss(OILPRICE ~ ., data = train1,  
+               trace = FALSE, family = BCPE)
+shapiro.test(model1$residuals)
+summary(model1)
+checkresiduals(model1$residuals)
+plot(model1)
+resid_density(model1)
+resid_index(model1)
+df.residual(model1)
+```
+
+
+#### Model 2: GAMLSS Model with no additive terms excluding the CL2-CL15 variables (sub_data)
+
+```{r}
+model2 <- gamlss(OILPRICE ~ ., data = train2,  
+               trace = FALSE, family = BCPE)
+shapiro.test(model2$residuals)
+summary(model2)
+checkresiduals(model2$residuals)
+plot(model2)
+resid_density(model2)
+resid_index(model2)
+df.residual(model2)
+
+```
+
+
+#### Model with Additive Smoothing Terms
+
+The GAMLSS model allows the user to model the distribution parameters mu, sigma, nu and tau as linear, non-linear parametric, non-parametric (smooth) function of the explanatory variables and/or random effects terms. For fitting non-linear, non-parametric (smooth) functions or random effects terms an additive term function has to be fitted. After switching between all the other functions, the best penalized smoothing function with the best non parametric results applied to this model were the pvc splines. 
+
+
+#### Model 3: GAMLSS Model with additive terms including all the variables (base_data)
+
+```{r}
+model3 <-
+  gamlss(
+    OILPRICE~ pvc(respLAG) + pvc(BDIY_log) + pvc(SPX_log) + pvc(DX1_log) + pvc(GC1_log)
+               + pvc(HO1_log) + pvc(USCI_log) + pvc(GNR_log) + pvc(SHCOMP_log) + pvc(FTSE_log) + pvc(CL2_log) 
+    + pvc(CL3_log) + pvc(CL4_log) + pvc(CL5_log) + pvc(CL6_log) + pvc(CL7_log) + pvc(CL8_log) + pvc(CL9_log) 
+    + pvc(CL10_log) + pvc(CL11_log) + pvc(CL12_log) + pvc(CL13_log) + pvc(CL14_log) + pvc(CL15_log),
+    family = BCPE,
+    data = train1)
+summary(model3)
+checkresiduals(model3$residuals)
+plot(model3)
+resid_density(model3)
+resid_index(model3)
+df.residual(model3)
+```
+```{r}
+# 0 > DF PARAMETER RANGE =< 6.
+#find.hyper(model3,parameters=c(0.01,6))
+#find.hyper(model4,parameters=c(0.01,6))
+```
+
+#### Model4: GAMLSS Model with additive terms excluding the CL2-CL15 variables (sub_data)
+
+```{r}
+model4<-
+  gamlss(formula = OILPRICE ~ pvc(respLAG) + pvc(BDIY_log) +  
+    pvc(SPX_log) + pvc(DX1_log) + pvc(GC1_log) + pvc(HO1_log) +  pvc(USCI_log) + pvc(GNR_log) + pvc(SHCOMP_log) + pvc(FTSE_log),  
+    family = BCPE, data = train2)
+summary(model4)
+checkresiduals(model4$residuals)
+plot(model4)
+resid_density(model4)
+resid_index(model4)
+df.residual(model4)
+```
+
+#### Variable Selection 
+
+Variable Selection was done using both StepGAIC and Random Forest. 
+ 
+```{r}
+# Stepwise model selection
+#stepGAIC(model1,direction='both')
+```
+
+
+In order to determine the most important variables, variable selection 
+was done with random forest algorithm in the caret package. The selected variables were then used to build models 5 and 6 with a different variant of additive term. 
+ 
+```{r}
+#Random forest variable importance for the full model. 
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+modelrf <- train(OILPRICE~., data=oildata_s, method="rf", trControl=control)
+modelrf
+varImp(modelrf)
+plot(varImp(modelrf, scale=T))
+```
+
+
+#### Model 5: GAMLSS Model with no additive terms including selected variables.
+
+```{r}
+model5 <- gamlss(OILPRICE ~ USCI_log +
+                       DX1_log +
+                       HO1_log +
+                       SHCOMP_log + respLAG,
+              data = train2,  
+              trace = FALSE, family = BCPE)
+
+shapiro.test(model5$residuals)
+checkresiduals(model5$residuals)
+summary(model5)
+plot(model5)
+resid_density(model5)
+resid_index(model5)
+df.residual(model5)
+```
+
+
+#### Model 6: GAMLSS Model with additive terms including selected significant variables. 
+
+
+We consider five selected significant variables in the model with additive smoothing splines as follows: 
+
+```{r}
+model6 <- gamlss(OILPRICE ~ pvc(USCI_log) +
+                       pvc(DX1_log) +
+                       pvc(HO1_log) +
+                       pvc(SHCOMP_log) + pvc(respLAG),
+              data = train2,  
+              trace = FALSE, family = BCPE)
+
+shapiro.test(model5$residuals)
+checkresiduals(model5$residuals)
+summary(model6)
+plot(model6)
+resid_index(model6)
+resid_density(model6)
+df.residual(model6)
+```
+
+
+
+### 5. Model Evaluation and Validation
+
+#### Model Diagnostics: Worm and Bucket Plots for model diagonistic checking
+
+Examine the worm plots of the models to further examine their diagnostics. It can be seen that the worm plot of model 2 seem to be the best behaved. 
+
+
+```{r}
+par(mfrow=c(3,2))
+wp(model1, ylim.all=0.9)
+wp(model2, ylim.all=0.9)
+wp(model3,ylim.all=0.9)
+wp(model4, ylim.all=0.9)
+wp(model5,ylim.all=0.9)
+wp(model6, ylim.all=0.9)
+```
+
+
+Examine the bucket plots of the models
+
+
+```{r}
+par(mfrow=c(3,2))
+bp(model1)
+bp(model2)
+bp(model3)
+bp(model4)
+bp(model5)
+bp(model6)
+```
+
+
+
+```{r}
+par(mfrow=c(3,2))
+centile_bucket(model1)
+centile_bucket(model2)
+centile_bucket(model3)
+centile_bucket(model4)
+centile_bucket(model5)
+centile_bucket(model6)
+```
+
+
+
+
+
+#### Model Validation
+
+Validate the models with the test data. 
+
+```{r}
+pred_1 <- predict(model1, newdata=test1, type = "response")
+pred_2 <- predict(model2, newdata=test2, type = "response")
+pred_3 <- predict(model3, newdata=test1, type = "response")
+pred_4 <- predict(model4, newdata=test2, type = "response")
+pred_5 <- predict(model5, newdata=test2, type = "response")
+pred_6 <- predict(model6, newdata=test2, type = "response")
+
+```
+
+Analyze the model accuracy metric values 
+
+
+```{r}
+Accuracy_values <- rbind(accuracy(pred_1, test1[,"OILPRICE"]),
+                         accuracy(pred_2, test2[,"OILPRICE"]),
+                         accuracy(pred_3, test1[,"OILPRICE"]),
+                         accuracy(pred_4, test2[,"OILPRICE"]),
+                         accuracy(pred_5, test2[,"OILPRICE"]),
+                         accuracy(pred_6, test2[,"OILPRICE"]))
+                         
+row.names(Accuracy_values) <- c("Model1", "Model2", "Model3",
+                                "Model4","Model5", "Model6")
+
+Accuracy_values
+
+
+#The model with the highest performance has the lowest metrics. 
+
+# Boxplot to view the size/distribution of the metrics
+
+boxplot(Accuracy_values,col=rainbow(6)) 
+
+```
+
+
+#### Final Model Selection via GAIC.  
+
+
+
+```{r}
+set.seed(123)
+GAIC(model1, model2, model3, model4, model5, model6, c=TRUE, k=2)
+```
+
+
+
+
+
+### 6. Probabilistic Forecasting
+
+Although models 1, 2  and 5 performs well from the model performance measures examined above, we use Model 6 for final prediction because it is parsimonious and appears to be good in terms of the RMSE, MAPE MAE and GAIC metrics. Among other criteria, it also has a higher degree of freedom than other best performing models, implying that better fit to the data is possible via this model.
+
+```{r}
+# Prediction Limits at 95% Confidence Interval
+critval <-  1.96
+upr <- pred_6 + (critval * (pred_6-test2$OILPRICE))
+lwr <- pred_6 - (critval * (pred_6-test2$OILPRICE))
+```
+
+Suppose we assume the data is a time series:
+
+```{r}
+predts <- ts(pred_6, frequency = 365, start = c(2021,336))
+traints <- ts(train2, frequency = 365, start = c(2022,1,1))
+testts <- ts(test2, frequency = 365, start = c(2022,336))
+upper <- ts(upr, frequency = 365, start = c(2022,336))
+lower <- ts(lwr, frequency = 365, start = c(2022,336))
+upr <- c(train2$OILPRICE, upr)
+lwr <- c(train2$OILPRICE, lwr)
+
+```
+
+
+Probabilistic Prediction Interval
+
+```{r}
+PPI=c(min(lwr),max(upr))
+PPI
+```
+
+
+
+### 7. Interpretation and Conclusion
+
+We can conclude that the one day ahead probabilistic prediction interval of oil price is within 3.10 and 4.70, at 95% confidence interval. Removing the past variables in the models helped the model with the final predictions and also decreased the noise of the prediction as seen in the non-parametric test Global Deviance (GD) values and other metrics. Also, the additive terms used in the parsimonious model gave a better model performance as shown in the behaviour of the worm plots and the AIC values, as well as the RMSE and other model performance metrics examined. The model 6 with parsimonious variables and additive terms proved to be the best model, and it was therefore used for forecasting. However, the residuals of all the models seem to be normally distributed by Shapiro Test and other measures, with mean close to zero and uncorrelated in most of the cases. 
+
+General speaking, the oil market is quite complex and would require a lot more modelling exercises to attempt to predict oil price, although there is no commonly accepted model for forecasting spot oil prices in literature. In future, I would also consider and deploy my skills to compare other variants of the GAMLSS model with various scale and location parameters, link functions and several other probabilistic models like Generalized Structural Time Series (GEST), artificial neural networks based models, Bayesian neural networks, support vector machines and various deep learning models. 
+
+Obrigado! 
+
+### References 
+
+- 1. Rigby, R. A. and Stasinopoulos D. M. (2005). Generalized additive models for location, scale and shape,(with discussion), Appl. Statist., 54, part 3, pp 507-554.
+
+- 2. Rigby, R. A., Stasinopoulos, D. M., Heller, G. Z., and De Bastiani, F. (2019) Distributions for modeling location, scale, and shape: Using GAMLSS in R, Chapman and Hall/CRC. 
+
+- 3. Stasinopoulos D. M. Rigby R.A. (2007) Generalized additive models for location scale and shape (GAMLSS) in R. Journal of Statistical Software, Vol. 23, Issue 7, Dec 2007.
+
+- 4. Stasinopoulos D. M., Rigby R.A., Heller G., Voudouris V., and De Bastiani F., (2017) Flexible Regression and Smoothing: Using GAMLSS in R, Chapman and Hall/CRC.
+
+```{r}
+sessionInfo()
+```
+
